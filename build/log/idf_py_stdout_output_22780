@@ -1,0 +1,5 @@
+-- Component directory C:/Users/camil/esp/v5.2.6/esp-idf/components/esp_vfs_console does not contain a CMakeLists.txt file. No component will be added
+-- ccache will be used for faster recompilation
+-- Building ESP-IDF components for target esp32
+NOTICE: Dependencies lock doesn't exist, solving dependencies.
+NOTICE: Using component placed at C:\Users\camil\esp\v5.2.6\esp-idf\examples\common_components\protocol_examples_common for dependency "protocol_examples_common", specified in C:\Users\camil\OneDrive\┴rea de Trabalho\UFJF\Software\trabalho\components\my_mqtt\idf_component.yml

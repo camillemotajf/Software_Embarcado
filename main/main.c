@@ -11,6 +11,11 @@
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include "ssd1306.h"
+#include "freertos/semphr.h"
+// #include "mqtt_client.h"
+#include "my_mqtt.h"
+#include <message_buffer.h>
+#include <cJSON.h>
 
 // ================= DEFINIÇÕES DE PINOS =================
 
@@ -49,6 +54,12 @@
 
 #define TAG "ROBOT_V2"
 
+// MQTT
+SemaphoreHandle_t wificonnectedSemaphore;
+SemaphoreHandle_t mqttconnectedSemaphore;
+
+MessageBufferHandle_t buffer_MQTT;
+
 // ================= ESTRUTURAS =================
 
 typedef enum {
@@ -69,10 +80,17 @@ typedef struct {
     int cal_val[NUM_SENSORS];
 } ir_sensors_t;
 
+typedef struct {
+    robot_mode_t mode;
+    bool blocked;
+    float distance;
+} mqtt_data_t;
+
 // ================= VARIÁVEIS GLOBAIS =================
 
 static QueueHandle_t joyQueueControl;
 static QueueHandle_t joyQueueOled;
+static QueueHandle_t mqttQueue;
 
 static ir_sensors_t ir_data;
 static const adc1_channel_t ir_channels[NUM_SENSORS] =
@@ -243,6 +261,8 @@ void master_control_task(void *pv) {
     int last_btn = 1;
     float last_valid_dist = 100.0f; // Guarda a ultima distancia valida
 
+    mqtt_data_t mqtt_msg;
+
     while (1) {
         // 1. Troca de Modo
         int btn = gpio_get_level(JOY_BUTTON);
@@ -286,6 +306,13 @@ void master_control_task(void *pv) {
 
         xQueueSend(joyQueueControl, &payload, 0);
         xQueueOverwrite(joyQueueOled, &payload);
+
+
+        mqtt_msg.mode = mode;
+        mqtt_msg.blocked = is_blocked;
+        mqtt_msg.distance = last_valid_dist;
+
+        xQueueOverwrite(mqttQueue, &mqtt_msg);
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -362,6 +389,67 @@ void oled_task(void *pv) {
     }
 }
 
+// ================= MQTT =================
+
+void wifiConnected(void *params)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(wificonnectedSemaphore, portMAX_DELAY))
+        {
+            ESP_LOGI("WIFI", "WiFi conectado! Iniciando MQTT...");
+            mqtt_start();
+        }
+    }
+}
+
+void send_broker_infos(const char mode, const char status)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(root, "device", "esp32");
+    cJSON_AddStringToObject(root, "mode", mode);
+    cJSON_AddStringToObject(root, "status", status);
+
+    char *json_str = cJSON_PrintUnformatted(root);
+
+    mqtt_publish("esp32/motor", json_str);
+
+    ESP_LOGI("MQTT", "JSON enviado: %s", json_str);
+
+    cJSON_Delete(root);
+    free(json_str);
+}
+
+void comunicacao_broker(void *pv)
+{
+    mqtt_data_t data;
+
+    // Espera MQTT conectar
+    xSemaphoreTake(mqttconnectedSemaphore, portMAX_DELAY);
+
+    while (1) {
+        if (xQueueReceive(mqttQueue, &data, portMAX_DELAY)) {
+
+            cJSON *root = cJSON_CreateObject();
+
+            cJSON_AddStringToObject(root, "device", "esp32");
+            cJSON_AddStringToObject(root, "mode",
+                data.mode == MODE_AUTO_IR ? "auto" : "manual");
+            cJSON_AddBoolToObject(root, "blocked", data.blocked);
+            cJSON_AddNumberToObject(root, "distance_cm", data.distance);
+
+            char *json = cJSON_PrintUnformatted(root);
+
+            mqtt_publish("esp32/robot/status", json);
+
+            cJSON_Delete(root);
+            free(json);
+        }
+    }
+}
+
+
 // ================= MAIN =================
 
 void app_main(void) {
@@ -378,11 +466,26 @@ void app_main(void) {
 
     joyQueueControl = xQueueCreate(10, sizeof(joy_t));
     joyQueueOled    = xQueueCreate(1,  sizeof(joy_t));
+    mqttQueue = xQueueCreate(5, sizeof(mqtt_data_t));
 
     // Aumentei stack do Master pois agora tem lógica de float e timer
     xTaskCreate(master_control_task, "master", 4096, NULL, 5, NULL);
     xTaskCreate(motor_task,          "motor",  2048, NULL, 4, NULL);
     xTaskCreate(oled_task,           "oled",   4096, NULL, 1, NULL);
+
+    // Semáforos
+    wificonnectedSemaphore = xSemaphoreCreateBinary();
+    mqttconnectedSemaphore = xSemaphoreCreateBinary();
+
+    // Buffer MQTT
+    buffer_MQTT = xMessageBufferCreate(100);
+
+    // Start Wi-Fi
+    wifi_start();
+
+    // Tasks
+    xTaskCreate(wifiConnected,       "Conexao MQTT",     4096, NULL, 2, NULL);
+    xTaskCreate(comunicacao_broker,  "ComBroker",        4096, NULL, 2, NULL);
 
     ESP_LOGI(TAG, "Sistema iniciado com v2.");
 }

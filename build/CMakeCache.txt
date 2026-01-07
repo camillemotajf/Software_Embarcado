@@ -14,6 +14,12 @@
 # EXTERNAL cache entries
 ########################
 
+//No help, variable specified on the command line.
+CCACHE_ENABLE:UNINITIALIZED=1
+
+//Path to a program.
+CCACHE_FOUND:FILEPATH=C:/Users/camil/esp/tools/ccache/4.11.2/ccache-4.11.2-windows-x86_64/ccache.exe
+
 //Path to a program.
 CMAKE_ADDR2LINE:FILEPATH=C:/Users/camil/esp/tools/xtensa-esp-elf/esp-13.2.0_20250707/xtensa-esp-elf/bin/xtensa-esp32-elf-addr2line.exe
 
@@ -243,6 +249,9 @@ IDF_TARGET:STRING=esp32
 
 //IDF Build Toolchain Type
 IDF_TOOLCHAIN:STRING=gcc
+
+//No help, variable specified on the command line.
+PYTHON:UNINITIALIZED=c:\Users\camil\esp\python_env\idf5.2_py3.11_env\Scripts\python.exe
 
 //No help, variable specified on the command line.
 PYTHON_DEPS_CHECKED:UNINITIALIZED=1
