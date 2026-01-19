@@ -12,27 +12,28 @@
 #include <esp_rom_sys.h>
 #include "ssd1306.h"
 #include "freertos/semphr.h"
-// #include "mqtt_client.h"
-#include "my_mqtt.h"
-#include <message_buffer.h>
+#include "freertos/message_buffer.h"
 #include <cJSON.h>
+#include "nvs_flash.h" // ADICIONADO: Essencial para WiFi
+#include "wifi.h"      // ADICIONADO
+#include "my_mqtt.h"   // ADICIONADO
 
 // ================= DEFINIÇÕES DE PINOS =================
 
 // Ultrassônico (HC-SR04)
 #define TRIG_PIN    5
 #define ECHO_PIN    18
-#define DIST_LIMIT_CM  20.0f  // Distância de parada (cm)
+#define DIST_LIMIT_CM  20.0f  
 
 // Joystick
 #define ADC_JOY_X   ADC1_CHANNEL_6   // GPIO34
-#define JOY_BUTTON  15               // Botão do joystick
+#define JOY_BUTTON  15               
 
 // Sensores Infravermelhos
-#define IR_CH_1     ADC1_CHANNEL_0   // GPIO 36
-#define IR_CH_2     ADC1_CHANNEL_3   // GPIO 39
-#define IR_CH_3     ADC1_CHANNEL_4   // GPIO 32
-#define IR_CH_4     ADC1_CHANNEL_5   // GPIO 33
+#define IR_CH_1     ADC1_CHANNEL_0   
+#define IR_CH_2     ADC1_CHANNEL_3   
+#define IR_CH_3     ADC1_CHANNEL_4   
+#define IR_CH_4     ADC1_CHANNEL_5   
 #define NUM_SENSORS 4
 
 // OLED
@@ -57,7 +58,6 @@
 // MQTT
 SemaphoreHandle_t wificonnectedSemaphore;
 SemaphoreHandle_t mqttconnectedSemaphore;
-
 MessageBufferHandle_t buffer_MQTT;
 
 // ================= ESTRUTURAS =================
@@ -70,8 +70,8 @@ typedef enum {
 typedef struct {
     float x;
     robot_mode_t mode;
-    bool blocked;       // Flag de bloqueio
-    float distance_cm;  // Valor para debug no OLED
+    bool blocked;       
+    float distance_cm;  
 } joy_t;
 
 typedef struct {
@@ -101,7 +101,6 @@ static const adc1_channel_t ir_channels[NUM_SENSORS] =
 void motor_init(void) {
     gpio_set_direction(MOTOR_IN1, GPIO_MODE_OUTPUT);
     gpio_set_direction(MOTOR_IN2, GPIO_MODE_OUTPUT);
-
     gpio_set_direction(JOY_BUTTON, GPIO_MODE_INPUT);
     gpio_set_pull_mode(JOY_BUTTON, GPIO_PULLUP_ONLY);
 
@@ -147,34 +146,28 @@ void set_motor_state(int dir, int duty) {
     ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
 }
 
-// Leitura mais robusta do Ultrassônico
 float get_ultrasonic_cm(void) {
-    // 1. Trigger
     gpio_set_level(TRIG_PIN, 0);
     esp_rom_delay_us(2);
     gpio_set_level(TRIG_PIN, 1);
     esp_rom_delay_us(10);
     gpio_set_level(TRIG_PIN, 0);
 
-    // 2. Espera ECHO ficar HIGH (Timeout 20ms)
     int64_t start = esp_timer_get_time();
     while (gpio_get_level(ECHO_PIN) == 0) {
         if ((esp_timer_get_time() - start) > 20000) return -1.0; 
     }
 
-    // 3. Mede o tempo em HIGH (Timeout 25ms ~ 4m)
     int64_t echo_start = esp_timer_get_time();
     while (gpio_get_level(ECHO_PIN) == 1) {
         if ((esp_timer_get_time() - echo_start) > 25000) break; 
     }
     int64_t echo_end = esp_timer_get_time();
 
-    // 4. Cálculo
     float distance = (float)(echo_end - echo_start) / 58.0f;
     
-    // 5. Filtro básico de hardware
     if (distance > 400.0f) return 400.0f;
-    if (distance < 2.0f && distance > 0.0f) return 2.0f; // Mínimo físico do sensor
+    if (distance < 2.0f && distance > 0.0f) return 2.0f; 
     
     return distance;
 }
@@ -188,7 +181,6 @@ void calibrate_sensors_phase(void) {
         ir_data.max_val[i] = 0;
     }
 
-    // Leitura rápida para calibração
     for (int k = 0; k < 200; k++) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             int v = adc1_get_raw(ir_channels[i]);
@@ -198,7 +190,6 @@ void calibrate_sensors_phase(void) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // Evita divisão por zero
     for (int i = 0; i < NUM_SENSORS; i++)
         if (ir_data.max_val[i] <= ir_data.min_val[i])
             ir_data.max_val[i] = ir_data.min_val[i] + 1;
@@ -222,7 +213,7 @@ void read_calibrated_sensors(void) {
 float get_manual_command(void) {
     int raw = adc1_get_raw(ADC_JOY_X);
     int center = 2048; 
-    int deadzone = 200; // Aumentei deadzone para evitar drift
+    int deadzone = 200; 
 
     int dx = raw - center;
     if (abs(dx) < deadzone) return 0.0f;
@@ -242,13 +233,12 @@ float get_auto_command(void) {
 
     int th = 500;
 
-    // Lógica simples de seguidor de linha
-    if (s1 > th) return -1.0f; // Curva forte esq
-    if (s4 > th) return  1.0f; // Curva forte dir
-    if (s2 > th) return -0.5f; // Curva suave esq
-    if (s3 > th) return  0.5f; // Curva suave dir
+    if (s1 > th) return -1.0f; 
+    if (s4 > th) return  1.0f; 
+    if (s2 > th) return -0.5f; 
+    if (s3 > th) return  0.5f; 
 
-    return 0.0f; // Reto
+    return 0.0f; 
 }
 
 // ================= TASKS =================
@@ -259,54 +249,44 @@ void master_control_task(void *pv) {
     robot_mode_t mode = MODE_AUTO_IR;
     joy_t payload;
     int last_btn = 1;
-    float last_valid_dist = 100.0f; // Guarda a ultima distancia valida
+    float last_valid_dist = 100.0f; 
 
     mqtt_data_t mqtt_msg;
 
     while (1) {
-        // 1. Troca de Modo
         int btn = gpio_get_level(JOY_BUTTON);
         if (last_btn && !btn) {
             mode = (mode == MODE_AUTO_IR) ? MODE_MANUAL_JOY : MODE_AUTO_IR;
-            vTaskDelay(pdMS_TO_TICKS(300)); // Debounce
+            vTaskDelay(pdMS_TO_TICKS(300)); 
         }
         last_btn = btn;
 
-        // 2. Leitura Sensores
         read_calibrated_sensors();
         float dist_raw = get_ultrasonic_cm();
 
-        // 3. Filtragem Simples da Distância
-        // Se der -1 (timeout), mantém o último valor válido para não desbloquear falsamente
-        // Se for > 0 e < 400, atualiza
         if (dist_raw > 0.1f && dist_raw <= 400.0f) {
             last_valid_dist = dist_raw;
         }
 
-        // 4. Lógica de Bloqueio
         bool is_blocked = false;
-        // Só bloqueia se a leitura for VÁLIDA e menor que o limite
         if (last_valid_dist < DIST_LIMIT_CM && last_valid_dist > 1.0f) {
             is_blocked = true;
         }
 
-        // 5. Cálculo do Comando Motor
         float cmd = 0.0f;
         if (is_blocked) {
-            cmd = 0.0f; // Prioridade total para parada
+            cmd = 0.0f; 
         } else {
             cmd = (mode == MODE_MANUAL_JOY) ? get_manual_command() : get_auto_command();
         }
 
-        // 6. Envio para Display e Motor
         payload.x = cmd;
         payload.mode = mode;
         payload.blocked = is_blocked;
-        payload.distance_cm = last_valid_dist; // Envia para o OLED ver
+        payload.distance_cm = last_valid_dist; 
 
         xQueueSend(joyQueueControl, &payload, 0);
         xQueueOverwrite(joyQueueOled, &payload);
-
 
         mqtt_msg.mode = mode;
         mqtt_msg.blocked = is_blocked;
@@ -320,14 +300,12 @@ void master_control_task(void *pv) {
 
 void motor_task(void *pv) {
     joy_t joy;
-    // Ajuste de potência
-    const int DUTY_LOW = 4800;  // Um pouco mais força para arrancar
+    const int DUTY_LOW = 4800; 
     const int DUTY_HIGH = 8191;
 
     while (1) {
         if (xQueueReceive(joyQueueControl, &joy, portMAX_DELAY)) {
             
-            // Segurança redundante no motor task
             if (joy.blocked) {
                 set_motor_state(0, 0);
                 continue; 
@@ -355,12 +333,10 @@ void oled_task(void *pv) {
     while (1) {
         if (xQueueReceive(joyQueueOled, &joy, portMAX_DELAY)) {
 
-            // LINHA 0: MODO
             ssd1306_display_text(&oled, 0,
                 joy.mode == MODE_AUTO_IR ? "MODO: AUTO (IR)" : "MODO: MANUAL",
                 16, false);
 
-            // LINHA 1: DISTÂNCIA (NOVO REQUISITO)
             if (joy.distance_cm > 300) {
                  snprintf(buf, sizeof(buf), "DIST: >300 cm");
             } else {
@@ -368,15 +344,12 @@ void oled_task(void *pv) {
             }
             ssd1306_display_text(&oled, 1, buf, strlen(buf), false);
 
-            // LINHA 2: SENSORES IR (Compactado para caber)
-            // Mostra S1 e S4 (Extremidades) que são os mais importantes
             snprintf(buf, sizeof(buf), "IR: %3d  %3d", 
                      ir_data.cal_val[0], ir_data.cal_val[3]);
             ssd1306_display_text(&oled, 2, buf, strlen(buf), false);
 
-            // LINHA 3: STATUS FINAL
             if (joy.blocked) {
-                ssd1306_display_text(&oled, 3, "BLOQUEADO!    ", 16, true); // Invertido para destaque
+                ssd1306_display_text(&oled, 3, "BLOQUEADO!    ", 16, true); 
             } else {
                 if (joy.x > 0.1)
                     ssd1306_display_text(&oled, 3, "MOTOR: >>>    ", 16, false);
@@ -403,30 +376,15 @@ void wifiConnected(void *params)
     }
 }
 
-void send_broker_infos(const char mode, const char status)
-{
-    cJSON *root = cJSON_CreateObject();
-
-    cJSON_AddStringToObject(root, "device", "esp32");
-    cJSON_AddStringToObject(root, "mode", mode);
-    cJSON_AddStringToObject(root, "status", status);
-
-    char *json_str = cJSON_PrintUnformatted(root);
-
-    mqtt_publish("esp32/motor", json_str);
-
-    ESP_LOGI("MQTT", "JSON enviado: %s", json_str);
-
-    cJSON_Delete(root);
-    free(json_str);
-}
-
 void comunicacao_broker(void *pv)
 {
     mqtt_data_t data;
 
     // Espera MQTT conectar
     xSemaphoreTake(mqttconnectedSemaphore, portMAX_DELAY);
+    
+    // Inscreve num tópico apenas para garantir (opcional)
+    mqtt_subscribe("esp32/robot/cmd");
 
     while (1) {
         if (xQueueReceive(mqttQueue, &data, portMAX_DELAY)) {
@@ -441,6 +399,7 @@ void comunicacao_broker(void *pv)
 
             char *json = cJSON_PrintUnformatted(root);
 
+            // Publique no tópico de teste
             mqtt_publish("esp32/robot/status", json);
 
             cJSON_Delete(root);
@@ -449,10 +408,17 @@ void comunicacao_broker(void *pv)
     }
 }
 
-
 // ================= MAIN =================
 
 void app_main(void) {
+    // 1. INICIALIZAR NVS (CRÍTICO PARA WIFI)
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
     adc1_config_width(ADC_WIDTH_BIT_12);
     adc1_config_channel_atten(ADC_JOY_X, ADC_ATTEN_DB_12);
 
@@ -466,12 +432,7 @@ void app_main(void) {
 
     joyQueueControl = xQueueCreate(10, sizeof(joy_t));
     joyQueueOled    = xQueueCreate(1,  sizeof(joy_t));
-    mqttQueue = xQueueCreate(5, sizeof(mqtt_data_t));
-
-    // Aumentei stack do Master pois agora tem lógica de float e timer
-    xTaskCreate(master_control_task, "master", 4096, NULL, 5, NULL);
-    xTaskCreate(motor_task,          "motor",  2048, NULL, 4, NULL);
-    xTaskCreate(oled_task,           "oled",   4096, NULL, 1, NULL);
+    mqttQueue       = xQueueCreate(1, sizeof(mqtt_data_t));
 
     // Semáforos
     wificonnectedSemaphore = xSemaphoreCreateBinary();
@@ -484,8 +445,11 @@ void app_main(void) {
     wifi_start();
 
     // Tasks
-    xTaskCreate(wifiConnected,       "Conexao MQTT",     4096, NULL, 2, NULL);
-    xTaskCreate(comunicacao_broker,  "ComBroker",        4096, NULL, 2, NULL);
+    xTaskCreate(master_control_task, "master", 4096, NULL, 5, NULL);
+    xTaskCreate(motor_task,          "motor",  2048, NULL, 4, NULL);
+    xTaskCreate(oled_task,           "oled",   4096, NULL, 1, NULL);
+    xTaskCreate(wifiConnected,       "ConMQTT",4096, NULL, 2, NULL);
+    xTaskCreate(comunicacao_broker,  "ComBrok",4096, NULL, 2, NULL);
 
     ESP_LOGI(TAG, "Sistema iniciado com v2.");
 }
