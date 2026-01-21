@@ -181,7 +181,7 @@ void calibrate_sensors_phase(void) {
         ir_data.max_val[i] = 0;
     }
 
-    for (int k = 0; k < 200; k++) {
+    for (int k = 0; k < 2000; k++) {
         for (int i = 0; i < NUM_SENSORS; i++) {
             int v = adc1_get_raw(ir_channels[i]);
             if (v < ir_data.min_val[i]) ir_data.min_val[i] = v;
@@ -333,10 +333,12 @@ void oled_task(void *pv) {
     while (1) {
         if (xQueueReceive(joyQueueOled, &joy, portMAX_DELAY)) {
 
+            // LINHA 0: MODO
             ssd1306_display_text(&oled, 0,
                 joy.mode == MODE_AUTO_IR ? "MODO: AUTO (IR)" : "MODO: MANUAL",
                 16, false);
 
+            // LINHA 1: DISTÂNCIA
             if (joy.distance_cm > 300) {
                  snprintf(buf, sizeof(buf), "DIST: >300 cm");
             } else {
@@ -344,24 +346,31 @@ void oled_task(void *pv) {
             }
             ssd1306_display_text(&oled, 1, buf, strlen(buf), false);
 
-            snprintf(buf, sizeof(buf), "IR: %3d  %3d", 
-                     ir_data.cal_val[0], ir_data.cal_val[3]);
+            // LINHA 2: SENSORES 0 e 1 (Esquerda/Centro-Esq)
+            snprintf(buf, sizeof(buf), "IR: %3d %3d", 
+                     ir_data.cal_val[0], ir_data.cal_val[1]);
             ssd1306_display_text(&oled, 2, buf, strlen(buf), false);
 
+            // LINHA 3: SENSORES 2 e 3 (Centro-Dir/Direita)
+            // Usamos espaços no início para alinhar visualmente com a linha de cima
+            snprintf(buf, sizeof(buf), "    %3d %3d", 
+                     ir_data.cal_val[2], ir_data.cal_val[3]);
+            ssd1306_display_text(&oled, 3, buf, strlen(buf), false);
+
+            // LINHA 4: STATUS FINAL (Movido da linha 3 para a 4 para dar espaço)
             if (joy.blocked) {
-                ssd1306_display_text(&oled, 3, "BLOQUEADO!    ", 16, true); 
+                ssd1306_display_text(&oled, 4, "BLOQUEADO!    ", 16, true); 
             } else {
                 if (joy.x > 0.1)
-                    ssd1306_display_text(&oled, 3, "MOTOR: >>>    ", 16, false);
+                    ssd1306_display_text(&oled, 4, "MOTOR: >>>    ", 16, false);
                 else if (joy.x < -0.1)
-                    ssd1306_display_text(&oled, 3, "MOTOR: <<<    ", 16, false);
+                    ssd1306_display_text(&oled, 4, "MOTOR: <<<    ", 16, false);
                 else
-                    ssd1306_display_text(&oled, 3, "MOTOR: PARADO ", 16, false);
+                    ssd1306_display_text(&oled, 4, "MOTOR: PARADO ", 16, false);
             }
         }
     }
 }
-
 // ================= MQTT =================
 
 void wifiConnected(void *params)
